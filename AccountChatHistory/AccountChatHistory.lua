@@ -712,6 +712,9 @@ local function CreateOptionsPanel()
     colorContainer:SetWidth(380)
     colorContainer:SetHeight(140)
     
+    -- Local references to the color swatch functions for later initialization
+    local updateFunctions = {}
+    
     -- Per-channel Text Color pickers (Global/General/Party/Party Leader) - ALIGNED
     local function MakeColorSwatchRow(labelText, settingKey, yOffset)
         local label = colorContainer:CreateFontString(nil, "ARTWORK", "GameFontNormal")
@@ -747,6 +750,9 @@ local function CreateOptionsPanel()
             if not c then return end
             sample:SetTexture(c.r or 1, c.g or 1, c.b or 1)
         end
+        
+        -- Store the update function for later
+        table.insert(updateFunctions, {func = Update, key = settingKey})
         
         swatch:SetScript("OnClick", function()
             local c = tempSettings[settingKey]
@@ -790,15 +796,14 @@ local function CreateOptionsPanel()
             ColorPickerFrame:Raise()
         end)
         
-        Update()
-        return label
+        return swatch, Update
     end
     
     -- Create aligned color pickers with consistent vertical spacing
-    local c1 = MakeColorSwatchRow("Global Text:",       "globalColor",      0)
-    local c2 = MakeColorSwatchRow("General Text:",      "generalColor",    -28)
-    local c3 = MakeColorSwatchRow("Party Text:",        "partyColor",      -56)
-    local c4 = MakeColorSwatchRow("Party Leader Text:", "partyLeaderColor", -84)
+    local c1, update1 = MakeColorSwatchRow("Global Text:",       "globalColor",      0)
+    local c2, update2 = MakeColorSwatchRow("General Text:",      "generalColor",    -28)
+    local c3, update3 = MakeColorSwatchRow("Party Text:",        "partyColor",      -56)
+    local c4, update4 = MakeColorSwatchRow("Party Leader Text:", "partyLeaderColor", -84)
     
     -- Filter Color swatch - positioned below the color container
     local filterColorSwatch = CreateFrame("Button", nil, panel)
@@ -824,6 +829,9 @@ local function CreateOptionsPanel()
         if not c then return end
         filterSample:SetTexture(c.r or 1, c.g or 1, c.b or 1)
     end
+    
+    -- Store the filter swatch update function
+    table.insert(updateFunctions, {func = UpdateFilterSwatch, key = "filterColor"})
     
     filterColorSwatch:SetScript("OnClick", function()
         local c = tempSettings.filterColor
@@ -905,6 +913,9 @@ local function CreateOptionsPanel()
         slider:SetValue(percent)
         sliderValueText:SetText(percent .. "%")
     end
+    
+    -- Store the slider update function
+    table.insert(updateFunctions, {func = UpdateSliderValue, key = "filterAlpha"})
     
     -- Slider script handlers
     slider:SetScript("OnValueChanged", function(self, value)
@@ -1040,22 +1051,21 @@ local function CreateOptionsPanel()
     UIDropDownMenu_Initialize(timezoneDropdown, TimezoneDropdown_Initialize)
     UIDropDownMenu_SetWidth(timezoneDropdown, 120)
     
-    -- REMOVED: Filter Edit Box section has been completely removed
-    -- The filter text input field and its label are no longer in the interface options
-    
     -- Refresh function - called when panel is shown
     local function RefreshPanel()
         -- Copy current settings to temp storage
         CopyToTempSettings()
         
-        UpdateFilterSwatch()
-        UpdateSliderValue()
+        -- Call all update functions to initialize the display
+        for _, updateInfo in ipairs(updateFunctions) do
+            if updateInfo.func then
+                updateInfo.func()
+            end
+        end
         
         checkGlobal:SetChecked(tempSettings.recordGlobal)
         checkGeneral:SetChecked(tempSettings.recordGeneral)
         checkParty:SetChecked(tempSettings.recordParty)
-        
-        -- REMOVED: No longer setting filter edit box text
         
         UIDropDownMenu_SetSelectedValue(retentionDropdown, tempSettings.retentionSeconds)
         UIDropDownMenu_SetSelectedValue(timezoneDropdown, tempSettings.timezoneOffset)
