@@ -10,6 +10,8 @@ local CFG = {
     ReplayOnLogin = true,
 }
 
+local ReplayCurrentView
+
 -- ===== Simple timer (3.3.5-safe) =====
 
 local _timers = {}
@@ -212,12 +214,8 @@ local function PeriodicRetentionCleanup()
         end
     end
     
-    if hadChanges and achFrame and achFrame:IsVisible() then
-        if ACH_DB and ACH_DB.settings and ACH_DB.settings.filter and ACH_DB.settings.filter ~= "" then
-            FilteredReplay()
-        else
-            FullReplay()
-        end
+    if hadChanges then
+        ReplayCurrentView()
     end
     
     After(30, PeriodicRetentionCleanup)
@@ -234,8 +232,12 @@ local function PushLine(streamKey, streamName, author, text, guid, src)
         src = src,
     })
     
+    local beforeTrim = #s.lines
     TrimByAge(s.lines)
     Trim(s.lines, CFG.MaxLines)
+    if #s.lines < beforeTrim then
+        ReplayCurrentView()
+    end
 end
 
 -- ===== Class-colored, clickable names =====
@@ -357,6 +359,8 @@ end
 
 local achFilterBox
 local achFilterClear
+local achFilterBar
+local filterBarSizeHooked = false
 
 local function PassesFilter(p)
     if not ACH_DB or not ACH_DB.settings then return true end
@@ -386,17 +390,26 @@ local function SyncFilterBarAlpha()
     achFilterClear:SetAlpha(alpha)
 end
 
+local function UpdateFilterBarGeometry()
+    if not achFrame or not achFilterBar then return end
+    achFilterBar:ClearAllPoints()
+    achFilterBar:SetPoint("TOPLEFT", achFrame, "BOTTOMLEFT", -4, -6)
+    achFilterBar:SetPoint("TOPRIGHT", achFrame, "BOTTOMRIGHT", 0, -6)
+end
+
 local function UpdateFilterBarVisibility()
-    if not achFrame or not achFilterBox or not achFilterClear then return end
-    
+    if not achFrame or not achFilterBar or not achFilterBox or not achFilterClear then return end
+
     local isVisible = achFrame:IsShown()
-    
+
     if isVisible then
         achFilterBox:Show()
         achFilterClear:Show()
+        achFilterBar:Show()
     else
         achFilterBox:Hide()
         achFilterClear:Hide()
+        achFilterBar:Hide()
     end
 end
 
@@ -472,6 +485,15 @@ local function FilteredReplay()
     end
 end
 
+ReplayCurrentView = function()
+    if not achFrame then return end
+    if ACH_DB and ACH_DB.settings and ACH_DB.settings.filter and ACH_DB.settings.filter ~= "" then
+        FilteredReplay()
+    else
+        FullReplay()
+    end
+end
+
 -- ===== Ensure chat frame + filter bar =====
 
 local function EnsureFilterBar()
@@ -490,8 +512,8 @@ local function EnsureFilterBar()
     local eb = CreateFrame("EditBox", "ACHFilterBox", bar, "InputBoxTemplate")
     eb:SetHeight(20)
     eb:SetAutoFocus(false)
-    eb:SetPoint("LEFT", bar, "LEFT", 4, 0)
-    eb:SetPoint("RIGHT", bar, "RIGHT", -64, 0)
+    eb:SetPoint("LEFT", bar, "LEFT", 10, 0)
+    eb:SetPoint("RIGHT", bar, "RIGHT", -70, 0)
     eb:SetFontObject(GameFontNormalSmall)
     eb:SetMaxLetters(100)
     eb:SetTextInsets(4, 4, 2, 2)
@@ -543,8 +565,10 @@ local function EnsureFilterBar()
         FullReplay()
     end)
     
+    achFilterBar = bar
     achFilterBox = eb
     achFilterClear = btn
+    UpdateFilterBarGeometry()
     
     if ACH_DB and ACH_DB.settings and ACH_DB.settings.filter then
         eb:SetText(ACH_DB.settings.filter)
@@ -574,7 +598,13 @@ local function EnsureChatFrame()
     
     achFrame:HookScript("OnShow", UpdateFilterBarVisibility)
     achFrame:HookScript("OnHide", UpdateFilterBarVisibility)
-    
+    if not filterBarSizeHooked then
+        achFrame:HookScript("OnSizeChanged", function()
+            UpdateFilterBarGeometry()
+        end)
+        filterBarSizeHooked = true
+    end
+
     UnsubscribeRealChatFromACH()
     
     EnsureFilterBar()
@@ -1130,11 +1160,12 @@ f:SetScript("OnEvent", function(_, event, ...)
         
     elseif event == "CHAT_MSG_CHANNEL" then
         local msg, author, _, _, _, _, _, channelNumber, channelName, _, _, guid = ...
-        
-        if channelName then
-            local cn = string.lower(channelName)
-            
-            if cn == string.lower(CFG.GlobalChannelName) then
+        local lowerChannelName = channelName and string.lower(channelName) or ""
+        local globalChannelKey = CFG.GlobalChannelName and string.lower(CFG.GlobalChannelName) or ""
+
+        if channelName and globalChannelKey ~= "" then
+            local globalPrefixIndex = string.find(lowerChannelName, globalChannelKey, 1, true)
+            if globalPrefixIndex == 1 then
                 if ACH_DB.settings.recordGlobal then
                     local p = {
                         t = Now(),
@@ -1143,33 +1174,39 @@ f:SetScript("OnEvent", function(_, event, ...)
                         guid = guid,
                         src = CFG.GlobalChannelName,
                     }
-                    
+
                     PushLine("global", CFG.GlobalChannelName, author, msg, guid, CFG.GlobalChannelName)
-                    
+
                     if PassesFilter(p) then
                         Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
                     end
                 end
                 return
             end
-            
-            if cn == "general" then
-                if ACH_DB.settings.recordGeneral then
-                    local p = {
-                        t = Now(),
-                        from = author,
-                        msg = msg,
-                        guid = guid,
-                        src = "General",
-                    }
-                    
-                    PushLine("general", "General", author, msg, guid, "General")
-                    
-                    if PassesFilter(p) then
-                        Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
-                    end
-                end
-                return
+        end
+
+        local generalTag = string.lower(GENERAL or "general")
+        local isGeneralChannel = channelNumber == 1
+        if not isGeneralChannel and generalTag ~= "" and channelName then
+            local prefixIndex = string.find(lowerChannelName, generalTag, 1, true)
+            if prefixIndex == 1 then
+                isGeneralChannel = true
+            end
+        end
+
+        if isGeneralChannel and ACH_DB.settings.recordGeneral then
+            local p = {
+                t = Now(),
+                from = author,
+                msg = msg,
+                guid = guid,
+                src = "General",
+            }
+
+            PushLine("general", "General", author, msg, guid, "General")
+
+            if PassesFilter(p) then
+                Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
             end
         end
         
