@@ -413,75 +413,83 @@ local function UpdateFilterBarVisibility()
     end
 end
 
+-- ===== New functions for chronological display =====
+
+local function GetAllLinesChronologically()
+    local rdb = GetRealmDB()
+    local allLines = {}
+    
+    -- Collect all lines from all streams
+    if rdb and rdb.streams then
+        for streamKey, stream in pairs(rdb.streams) do
+            if stream and stream.lines then
+                for _, line in ipairs(stream.lines) do
+                    -- Add stream info to each line
+                    local lineCopy = {
+                        t = line.t,
+                        from = line.from,
+                        msg = line.msg,
+                        guid = line.guid,
+                        src = line.src,
+                        streamKey = streamKey
+                    }
+                    table.insert(allLines, lineCopy)
+                end
+            end
+        end
+    end
+    
+    -- Sort by timestamp (oldest first)
+    table.sort(allLines, function(a, b)
+        return (a.t or 0) < (b.t or 0)
+    end)
+    
+    return allLines
+end
+
 local function FullReplay()
     achFrame:Clear()
     
-    local rdb = GetRealmDB()
+    Out("----- AccountChatHistory: chronological replay (this realm) -----", nil, 0.7, 0.7, 0.7)
     
-    Out("----- AccountChatHistory: replay (this realm) -----", nil, 0.7, 0.7, 0.7)
+    local allLines = GetAllLinesChronologically()
+    TrimByAge(allLines)
     
-    local order = { "global", "general", "party" }
-    
-    for _, key in ipairs(order) do
-        local s = rdb.streams[key]
+    if #allLines > 0 then
+        Out(("Total: %d lines"):format(#allLines), nil, 0.7, 0.7, 0.7)
         
-        if s and s.lines then
-            TrimByAge(s.lines)
-            
-            if #s.lines > 0 then
-                Out(("[%s] (%d lines)"):format(s.name or key, #s.lines), nil, 0.7, 0.7, 0.7)
-                
-                for i = 1, #s.lines do
-                    local p = s.lines[i]
-                    Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
-                end
-            else
-                local label = (key == "global" and CFG.GlobalChannelName) or key
-                Out(("[%s] (no saved history)"):format(label), nil, 0.7, 0.7, 0.7)
-            end
-        else
-            local label = (key == "global" and CFG.GlobalChannelName) or key
-            Out(("[%s] (no saved history)"):format(label), nil, 0.7, 0.7, 0.7)
+        for i = 1, #allLines do
+            local p = allLines[i]
+            Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
         end
+    else
+        Out("(no saved history)", nil, 0.7, 0.7, 0.7)
     end
 end
 
 local function FilteredReplay()
     achFrame:Clear()
     
-    local rdb = GetRealmDB()
+    Out("----- AccountChatHistory: filtered chronological replay (this realm) -----", nil, 0.7, 0.7, 0.7)
     
-    Out("----- AccountChatHistory: filtered replay (this realm) -----", nil, 0.7, 0.7, 0.7)
+    local allLines = GetAllLinesChronologically()
+    TrimByAge(allLines)
     
-    local order = { "global", "general", "party" }
+    local filteredCount = 0
     
-    for _, key in ipairs(order) do
-        local s = rdb.streams[key]
-        local hasAny = false
+    for i = 1, #allLines do
+        local p = allLines[i]
         
-        if s and s.lines then
-            TrimByAge(s.lines)
-            
-            if #s.lines > 0 then
-                for i = 1, #s.lines do
-                    local p = s.lines[i]
-                    
-                    if PassesFilter(p) then
-                        if not hasAny then
-                            Out(("[%s] (filtered)"):format(s.name or key), nil, 0.7, 0.7, 0.7)
-                            hasAny = true
-                        end
-                        
-                        Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
-                    end
-                end
-            end
+        if PassesFilter(p) then
+            filteredCount = filteredCount + 1
+            Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
         end
-        
-        if not hasAny then
-            local label = (key == "global" and CFG.GlobalChannelName) or key
-            Out(("[%s] (no matching lines)"):format(label), nil, 0.7, 0.7, 0.7)
-        end
+    end
+    
+    if filteredCount > 0 then
+        Out(("Filtered: %d matching lines"):format(filteredCount), nil, 0.7, 0.7, 0.7)
+    else
+        Out("(no matching lines)", nil, 0.7, 0.7, 0.7)
     end
 end
 
