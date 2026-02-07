@@ -393,8 +393,8 @@ end
 local function UpdateFilterBarGeometry()
     if not achFrame or not achFilterBar then return end
     achFilterBar:ClearAllPoints()
-    achFilterBar:SetPoint("TOPLEFT", achFrame, "BOTTOMLEFT", -4, -6)
-    achFilterBar:SetPoint("TOPRIGHT", achFrame, "BOTTOMRIGHT", 0, -6)
+    achFilterBar:SetPoint("TOPLEFT", achFrame, "BOTTOMLEFT", -3, -7)
+    achFilterBar:SetPoint("TOPRIGHT", achFrame, "BOTTOMRIGHT", 3, -7)
 end
 
 local function UpdateFilterBarVisibility()
@@ -513,7 +513,7 @@ local function EnsureFilterBar()
     eb:SetHeight(20)
     eb:SetAutoFocus(false)
     eb:SetPoint("LEFT", bar, "LEFT", 10, 0)
-    eb:SetPoint("RIGHT", bar, "RIGHT", -70, 0)
+    eb:SetPoint("RIGHT", bar, "RIGHT", -60, 0)
     eb:SetFontObject(GameFontNormalSmall)
     eb:SetMaxLetters(100)
     eb:SetTextInsets(4, 4, 2, 2)
