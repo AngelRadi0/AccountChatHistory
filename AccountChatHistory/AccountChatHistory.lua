@@ -997,10 +997,10 @@ local function CreateOptionsPanel()
     UIDropDownMenu_Initialize(retentionDropdown, RetentionDropdown_Initialize)
     UIDropDownMenu_SetWidth(retentionDropdown, 120)
     
- -- Timezone Offset Dropdown - MOVED TO THE RIGHT AND ALIGNED WITH GENERAL TEXT
-local timezoneLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-timezoneLabel:SetPoint("TOPLEFT", retentionDropdown, "BOTTOMLEFT", 15, -10)  -- Fixed: Position relative to retention dropdown
-timezoneLabel:SetText("Timezone Offset:")
+    -- Timezone Offset Dropdown - MOVED TO THE RIGHT AND ALIGNED WITH GENERAL TEXT
+    local timezoneLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    timezoneLabel:SetPoint("TOPLEFT", retentionDropdown, "BOTTOMLEFT", 15, -10)  -- Fixed: Position relative to retention dropdown
+    timezoneLabel:SetText("Timezone Offset:")
     
     local timezoneDropdown = CreateFrame("Frame", "ACHTimezoneDropdown", panel, "UIDropDownMenuTemplate")
     timezoneDropdown:SetPoint("TOPLEFT", timezoneLabel, "BOTTOMLEFT", -16, -4)
@@ -1040,30 +1040,8 @@ timezoneLabel:SetText("Timezone Offset:")
     UIDropDownMenu_Initialize(timezoneDropdown, TimezoneDropdown_Initialize)
     UIDropDownMenu_SetWidth(timezoneDropdown, 120)
     
-    -- Filter Edit Box
-    local filterEditLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    filterEditLabel:SetPoint("TOPLEFT", checkParty, "BOTTOMLEFT", 0, -20)
-    filterEditLabel:SetText("Filter Text:")
-    
-    local filterEditBox = CreateFrame("EditBox", "ACHFilterEditBox", panel, "InputBoxTemplate")
-    filterEditBox:SetPoint("TOPLEFT", filterEditLabel, "BOTTOMLEFT", 0, -8)
-    filterEditBox:SetSize(200, 20)
-    filterEditBox:SetAutoFocus(false)
-    filterEditBox:SetFontObject(GameFontNormalSmall)
-    filterEditBox:SetMaxLetters(100)
-    filterEditBox:SetTextInsets(4, 4, 2, 2)
-    
-    filterEditBox:SetScript("OnTextChanged", function(self)
-        tempSettings.filter = self:GetText() or ""
-    end)
-    
-    filterEditBox:SetScript("OnEscapePressed", function(self)
-        self:ClearFocus()
-    end)
-    
-    filterEditBox:SetScript("OnEnterPressed", function(self)
-        self:ClearFocus()
-    end)
+    -- REMOVED: Filter Edit Box section has been completely removed
+    -- The filter text input field and its label are no longer in the interface options
     
     -- Refresh function - called when panel is shown
     local function RefreshPanel()
@@ -1077,7 +1055,7 @@ timezoneLabel:SetText("Timezone Offset:")
         checkGeneral:SetChecked(tempSettings.recordGeneral)
         checkParty:SetChecked(tempSettings.recordParty)
         
-        filterEditBox:SetText(tempSettings.filter or "")
+        -- REMOVED: No longer setting filter edit box text
         
         UIDropDownMenu_SetSelectedValue(retentionDropdown, tempSettings.retentionSeconds)
         UIDropDownMenu_SetSelectedValue(timezoneDropdown, tempSettings.timezoneOffset)
