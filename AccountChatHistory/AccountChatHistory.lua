@@ -55,12 +55,17 @@ local function InitDB()
             generalColor     = { r = 176/255, g = 96/255, b = 255/255 },
             partyColor       = { r = 176/255, g = 96/255, b = 255/255 },
             partyLeaderColor = { r = 176/255, g = 96/255, b = 255/255 },
+            raidColor        = { r = 176/255, g = 96/255, b = 255/255 },
+            raidLeaderColor  = { r = 176/255, g = 96/255, b = 255/255 },
+            raidWarningColor = { r = 176/255, g = 96/255, b = 255/255 },
             filterColor = { r = 1, g = 1, b = 1 },
             filterAlpha = 1.0, -- NEW: Transparency value for filter text (1.0 = fully opaque, 0.0 = fully transparent)
             filter = "",
             recordGlobal = true,
             recordGeneral = true,
             recordParty = true,
+            recordRaid = true,
+            recordRaidWarning = true,
             retentionSeconds = 3600,
             timezoneOffset = 0,
         }
@@ -102,6 +107,30 @@ local function InitDB()
             ACH_DB.settings.partyLeaderColor = { r = p.r or 176/255, g = p.g or 96/255, b = p.b or 255/255 }
         end
         
+        -- NEW: Ensure raid and raid leader colors exist
+        if type(ACH_DB.settings.raidColor) ~= "table" then
+            ACH_DB.settings.raidColor = { r = 176/255, g = 96/255, b = 255/255 }
+        else
+            -- Make sure it's not sharing a reference with other color tables
+            local r = ACH_DB.settings.raidColor
+            ACH_DB.settings.raidColor = { r = r.r or 176/255, g = r.g or 96/255, b = r.b or 255/255 }
+        end
+        
+        if type(ACH_DB.settings.raidLeaderColor) ~= "table" then
+            ACH_DB.settings.raidLeaderColor = { r = 176/255, g = 96/255, b = 255/255 }
+        else
+            -- Make sure it's not sharing a reference with other color tables
+            local r = ACH_DB.settings.raidLeaderColor
+            ACH_DB.settings.raidLeaderColor = { r = r.r or 176/255, g = r.g or 96/255, b = r.b or 255/255 }
+        end
+        
+        if type(ACH_DB.settings.raidWarningColor) ~= "table" then
+            ACH_DB.settings.raidWarningColor = { r = 176/255, g = 96/255, b = 255/255 }
+        else
+            local r = ACH_DB.settings.raidWarningColor
+            ACH_DB.settings.raidWarningColor = { r = r.r or 176/255, g = r.g or 96/255, b = r.b or 255/255 }
+        end
+        
         if type(ACH_DB.settings.filterColor) ~= "table" then
             ACH_DB.settings.filterColor = { r = 1, g = 1, b = 1 }
         else
@@ -129,6 +158,15 @@ local function InitDB()
         
         if type(ACH_DB.settings.recordParty) ~= "boolean" then
             ACH_DB.settings.recordParty = true
+        end
+        
+        -- NEW: Ensure raid recording settings exist
+        if type(ACH_DB.settings.recordRaid) ~= "boolean" then
+            ACH_DB.settings.recordRaid = true
+        end
+        
+        if type(ACH_DB.settings.recordRaidWarning) ~= "boolean" then
+            ACH_DB.settings.recordRaidWarning = true
         end
         
         if type(ACH_DB.settings.retentionSeconds) ~= "number" then
@@ -221,11 +259,55 @@ local function PeriodicRetentionCleanup()
     After(30, PeriodicRetentionCleanup)
 end
 
+-- FIXED: Track recently processed messages to prevent duplicates
+local lastMessages = {}
+local function IsDuplicateMessage(author, text, channelKey)
+    local normChannel = channelKey and string.lower(channelKey) or ""
+    local key = (author or "") .. "|" .. (text or "") .. "|" .. normChannel
+    local currentTime = GetTime()  -- More precise time than time()
+
+    -- Check if we've seen this exact message very recently (within 1 second)
+    if lastMessages[key] and (currentTime - lastMessages[key]) < 1 then
+        return true
+    end
+    
+    -- Store this message with current time
+    lastMessages[key] = currentTime
+    
+    -- Clean up old entries (older than 5 seconds)
+    for k, v in pairs(lastMessages) do
+        if currentTime - v > 5 then
+            lastMessages[k] = nil
+        end
+    end
+    
+    return false
+end
+
+-- FIXED: Improved duplicate prevention with better checking
 local function PushLine(streamKey, streamName, author, text, guid, src)
+    local dupChannel = streamKey or src or ""
+    if IsDuplicateMessage(author, text, dupChannel) then
+        return false
+    end
+
     local s = EnsureStream(streamKey, streamName)
     
+    -- Check for duplicates more thoroughly
+    local currentTime = Now()
+    for i = #s.lines, math.max(1, #s.lines - 10), -1 do
+        local line = s.lines[i]
+        if line and line.from == author and line.msg == text then
+            -- Check if timestamp is very close (within 2 seconds)
+            if math.abs(line.t - currentTime) <= 2 then
+                -- Duplicate found within 2 seconds, don't add it again
+                return false
+            end
+        end
+    end
+    
     table.insert(s.lines, {
-        t = Now(),
+        t = currentTime,
         from = author,
         msg = text,
         guid = guid,
@@ -235,9 +317,8 @@ local function PushLine(streamKey, streamName, author, text, guid, src)
     local beforeTrim = #s.lines
     TrimByAge(s.lines)
     Trim(s.lines, CFG.MaxLines)
-    if #s.lines < beforeTrim then
-        ReplayCurrentView()
-    end
+
+    return true
 end
 
 -- ===== Class-colored, clickable names =====
@@ -306,6 +387,8 @@ local function UnsubscribeRealChatFromACH()
     
     RemoveChatWindowChannel(id, "General")
     RemoveChatWindowMessages(id, "PARTY")
+    RemoveChatWindowMessages(id, "RAID") -- NEW: Unsubscribe from raid messages
+    RemoveChatWindowMessages(id, "RAID_WARNING")
 end
 
 local function GetStreamColor(src)
@@ -323,6 +406,12 @@ local function GetStreamColor(src)
         c = s.partyColor
     elseif src == "Party Leader" then
         c = s.partyLeaderColor
+    elseif src == "Raid" then -- NEW: Raid channel color
+        c = s.raidColor
+    elseif src == "Raid Leader" then -- NEW: Raid Leader channel color
+        c = s.raidLeaderColor
+    elseif src == "Raid Warning" then -- NEW: Raid Warning channel color
+        c = s.raidWarningColor
     else
         c = s.color
     end
@@ -378,7 +467,7 @@ local function PassesFilter(p)
     
     if string.find(msg, f, 1, true) then return true end
     if string.find(from, f, 1, true) then return true end
-    if string.find(src, f, 1, true) then return true end
+    if string.find(src, f, 1, true) then return false end
     
     return false
 end
@@ -413,8 +502,7 @@ local function UpdateFilterBarVisibility()
     end
 end
 
--- ===== New functions for chronological display =====
-
+-- FIXED: Chronological display functions
 local function GetAllLinesChronologically()
     local rdb = GetRealmDB()
     local allLines = {}
@@ -502,6 +590,19 @@ ReplayCurrentView = function()
     end
 end
 
+local refreshScheduled = false
+local function ScheduleChatRefresh()
+    if not achFrame then return end
+    if refreshScheduled then return end
+    refreshScheduled = true
+    After(0, function()
+        refreshScheduled = false
+        if achFrame then
+            ReplayCurrentView()
+        end
+    end)
+end
+
 -- ===== Ensure chat frame + filter bar =====
 
 local function EnsureFilterBar()
@@ -513,9 +614,10 @@ local function EnsureFilterBar()
     bar:SetPoint("TOPLEFT", achFrame, "BOTTOMLEFT", 0, -6)
     bar:SetPoint("TOPRIGHT", achFrame, "BOTTOMRIGHT", 0, -6)
     
-    local bg = bar:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints(bar)
-    bg:SetTexture(0, 0, 0, 0.2)
+    -- CHANGED: Remove the background texture creation entirely
+    -- local bg = bar:CreateTexture(nil, "BACKGROUND")
+    -- bg:SetAllPoints(bar)
+    -- bg:SetTexture(0, 0, 0, 0.2)  -- REMOVED
     
     local eb = CreateFrame("EditBox", "ACHFilterBox", bar, "InputBoxTemplate")
     eb:SetHeight(20)
@@ -586,6 +688,69 @@ local function EnsureFilterBar()
     UpdateFilterBarVisibility()
 end
 
+local function StripACHMessageGroups(frame)
+    if not frame then return end
+    local chatEvents = {
+        "CHAT_MSG_SAY",
+        "CHAT_MSG_EMOTE",
+        "CHAT_MSG_YELL",
+        "CHAT_MSG_CHANNEL",
+        "CHAT_MSG_PARTY",
+        "CHAT_MSG_PARTY_LEADER",
+        "CHAT_MSG_RAID",
+        "CHAT_MSG_RAID_LEADER",
+        "CHAT_MSG_RAID_WARNING",
+        "CHAT_MSG_GUILD",
+        "CHAT_MSG_OFFICER",
+        "CHAT_MSG_GUILD_ACHIEVEMENT",
+        "CHAT_MSG_ACHIEVEMENT",
+        "CHAT_MSG_WHISPER",
+        "CHAT_MSG_BN_WHISPER",
+        "CHAT_MSG_BN_CONVERSATION",
+        "CHAT_MSG_SYSTEM",
+        "CHAT_MSG_MONSTER_SAY",
+        "CHAT_MSG_MONSTER_YELL",
+        "CHAT_MSG_MONSTER_EMOTE",
+        "CHAT_MSG_MONSTER_PARTY",
+        "CHAT_MSG_MONSTER_WHISPER",
+    }
+    if frame.UnregisterEvent then
+        for _, evt in ipairs(chatEvents) do
+            frame:UnregisterEvent(evt)
+        end
+    end
+
+    if not ChatFrame_RemoveMessageGroup then return end
+    local groups = {
+        "SAY",
+        "EMOTE",
+        "YELL",
+        "CHANNEL",
+        "PARTY",
+        "PARTY_LEADER",
+        "RAID",
+        "RAID_LEADER",
+        "RAID_WARNING",
+        "GUILD",
+        "OFFICER",
+        "GUILD_ACHIEVEMENT",
+        "ACHIEVEMENT",
+        "WHISPER",
+        "BN_WHISPER",
+        "BN_CONVERSATION",
+        "SYSTEM",
+        "MONSTER_SAY",
+        "MONSTER_YELL",
+        "MONSTER_EMOTE",
+        "MONSTER_PARTY",
+        "MONSTER_WHISPER",
+    }
+
+    for _, group in ipairs(groups) do
+        ChatFrame_RemoveMessageGroup(frame, group)
+    end
+end
+
 local function EnsureChatFrame()
     if achFrame then
         EnsureFilterBar()
@@ -593,13 +758,15 @@ local function EnsureChatFrame()
         UpdateFilterBarVisibility()
         return
     end
-    
+
     achFrame = FindChatWindowByName("ACH")
     
     if not achFrame then
         achFrame = FCF_OpenNewWindow("ACH")
         FCF_DockFrame(achFrame)
     end
+
+    StripACHMessageGroups(achFrame)
     
     achFrame:SetFading(false)
     achFrame:SetMaxLines(2000)
@@ -646,12 +813,17 @@ local function CreateOptionsPanel()
             generalColor = CopyTable(ACH_DB.settings.generalColor),
             partyColor = CopyTable(ACH_DB.settings.partyColor),
             partyLeaderColor = CopyTable(ACH_DB.settings.partyLeaderColor),
+            raidColor = CopyTable(ACH_DB.settings.raidColor),
+            raidLeaderColor = CopyTable(ACH_DB.settings.raidLeaderColor),
+            raidWarningColor = CopyTable(ACH_DB.settings.raidWarningColor),
             filterColor = CopyTable(ACH_DB.settings.filterColor),
             filterAlpha = ACH_DB.settings.filterAlpha,
             filter = ACH_DB.settings.filter,
             recordGlobal = ACH_DB.settings.recordGlobal,
             recordGeneral = ACH_DB.settings.recordGeneral,
             recordParty = ACH_DB.settings.recordParty,
+            recordRaid = ACH_DB.settings.recordRaid,
+            recordRaidWarning = ACH_DB.settings.recordRaidWarning,
             retentionSeconds = ACH_DB.settings.retentionSeconds,
             timezoneOffset = ACH_DB.settings.timezoneOffset,
         }
@@ -663,12 +835,18 @@ local function CreateOptionsPanel()
         ACH_DB.settings.generalColor = CopyTable(tempSettings.generalColor)
         ACH_DB.settings.partyColor = CopyTable(tempSettings.partyColor)
         ACH_DB.settings.partyLeaderColor = CopyTable(tempSettings.partyLeaderColor)
+        ACH_DB.settings.raidColor = CopyTable(tempSettings.raidColor)
+        ACH_DB.settings.raidLeaderColor = CopyTable(tempSettings.raidLeaderColor)
+        ACH_DB.settings.raidWarningColor = CopyTable(tempSettings.raidWarningColor)
         ACH_DB.settings.filterColor = CopyTable(tempSettings.filterColor)
         ACH_DB.settings.filterAlpha = tempSettings.filterAlpha
         ACH_DB.settings.filter = tempSettings.filter
         ACH_DB.settings.recordGlobal = tempSettings.recordGlobal
         ACH_DB.settings.recordGeneral = tempSettings.recordGeneral
         ACH_DB.settings.recordParty = tempSettings.recordParty
+        ACH_DB.settings.recordRaid = tempSettings.recordRaid
+        ACH_DB.settings.recordRaidWarning = tempSettings.recordRaidWarning
+        
         ACH_DB.settings.retentionSeconds = tempSettings.retentionSeconds
         ACH_DB.settings.timezoneOffset = tempSettings.timezoneOffset
         
@@ -718,27 +896,19 @@ local function CreateOptionsPanel()
     local colorContainer = CreateFrame("Frame", nil, panel)
     colorContainer:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -12)
     colorContainer:SetWidth(380)
-    colorContainer:SetHeight(140)
+    colorContainer:SetHeight(220) -- Increased height for additional color pickers
     
     -- Local references to the color swatch functions for later initialization
     local updateFunctions = {}
     
-    -- Per-channel Text Color pickers (Global/General/Party/Party Leader) - ALIGNED
+    -- Per-channel Text Color pickers (Global/General/Party/Party Leader/Raid/Raid Leader) - ALIGNED
     local function MakeColorSwatchRow(labelText, settingKey, yOffset)
         local label = colorContainer:CreateFontString(nil, "ARTWORK", "GameFontNormal")
         label:SetPoint("TOPLEFT", colorContainer, "TOPLEFT", 0, yOffset)
         label:SetText(labelText)
         
         -- Set specific width for each label to align color boxes
-        if labelText == "Global Text:" then
-            label:SetWidth(110)  -- Adjusted for alignment
-        elseif labelText == "General Text:" then
-            label:SetWidth(110)  -- Adjusted for alignment
-        elseif labelText == "Party Text:" then
-            label:SetWidth(110)  -- Adjusted for alignment (same as others)
-        elseif labelText == "Party Leader Text:" then
-            label:SetWidth(110)  -- Adjusted for alignment (same as others)
-        end
+        label:SetWidth(140)  -- Increased width so longer names don't wrap
         
         local swatch = CreateFrame("Button", nil, colorContainer)
         swatch:SetSize(24, 24)
@@ -812,11 +982,32 @@ local function CreateOptionsPanel()
     local c2, update2 = MakeColorSwatchRow("General Text:",      "generalColor",    -28)
     local c3, update3 = MakeColorSwatchRow("Party Text:",        "partyColor",      -56)
     local c4, update4 = MakeColorSwatchRow("Party Leader Text:", "partyLeaderColor", -84)
+    local c5, update5 = MakeColorSwatchRow("Raid Text:",         "raidColor",       -112) -- NEW: Raid color picker
+    local c6, update6 = MakeColorSwatchRow("Raid Leader Text:",  "raidLeaderColor", -140) -- NEW: Raid Leader color picker
+    local c7, update7 = MakeColorSwatchRow("Raid Warning Text:", "raidWarningColor", -168) -- NEW: Raid Warning color
     
-    -- Filter Color swatch - positioned below the color container
-    local filterColorSwatch = CreateFrame("Button", nil, panel)
+    -- NEW: Create a container for Filter Text Color and Transparency with gold border
+    local filterContainer = CreateFrame("Frame", nil, panel)
+    filterContainer:SetPoint("TOPLEFT", colorContainer, "BOTTOMLEFT", 0, -10)
+    filterContainer:SetWidth(205)
+    filterContainer:SetHeight(95)
+    
+    -- Blizzard-style beveled border (no background fill)
+    filterContainer:SetBackdrop({
+        bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
+        edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Gold-Border",
+        tile     = true,
+        tileSize = 16,
+        edgeSize = 16,
+        insets   = { left = 4, right = 104, top = 4, bottom = 14 },
+    })
+    filterContainer:SetBackdropBorderColor(1, 1, 1, 1)
+    filterContainer:SetBackdropColor(0, 0, 0, 0)
+
+    -- Filter Color swatch - INSIDE THE CONTAINER
+    local filterColorSwatch = CreateFrame("Button", nil, filterContainer)
     filterColorSwatch:SetSize(24, 24)
-    filterColorSwatch:SetPoint("TOPLEFT", colorContainer, "BOTTOMLEFT", 0, -10)
+    filterColorSwatch:SetPoint("TOPLEFT", filterContainer, "TOPLEFT", 130, -10) -- Position inside container
     
     local bg2 = filterColorSwatch:CreateTexture(nil, "BACKGROUND")
     bg2:SetTexture(0, 0, 0)
@@ -827,10 +1018,11 @@ local function CreateOptionsPanel()
     filterSample:SetPoint("TOPLEFT", 2, -2)
     filterSample:SetPoint("BOTTOMRIGHT", -2, 2)
     
-    local filterText = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    filterText:SetPoint("LEFT", filterColorSwatch, "RIGHT", 4, 0)
-    filterText:SetText("Filter Text Color")
-    filterText:SetWidth(110)  -- Added for alignment
+    local filterText = filterContainer:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    filterText:SetPoint("RIGHT", filterColorSwatch, "LEFT", -4, 0)
+    -- Add spaces to the beginning of the text to shift it right
+    filterText:SetText("   Filter Text Color:")
+    filterText:SetWidth(110)
     
     local function UpdateFilterSwatch()
         local c = tempSettings.filterColor
@@ -880,23 +1072,29 @@ local function CreateOptionsPanel()
         ColorPickerFrame:Raise()
     end)
     
-    -- NEW: Transparency slider for filter text (to the right of filter color)
-    local filterAlphaLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
-    filterAlphaLabel:SetPoint("LEFT", filterText, "RIGHT", 10, 0)  -- Positioned to the right of filter text
+    -- Transparency controls - INSIDE THE SAME CONTAINER
+    local transparencySection = CreateFrame("Frame", nil, filterContainer)
+    transparencySection:SetPoint("TOPLEFT", filterText, "BOTTOMLEFT", 0, -15)
+    transparencySection:SetWidth(250)
+    transparencySection:SetHeight(40)
+    
+    -- Transparency label inside the container
+    local filterAlphaLabel = transparencySection:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+    filterAlphaLabel:SetPoint("LEFT", transparencySection, "LEFT", 0, 0)
     filterAlphaLabel:SetText("Transparency:")
     
-    -- Create slider background
-    local sliderFrame = CreateFrame("Frame", "ACHFilterAlphaSliderFrame", panel)
+    -- Create slider background inside the container
+    local sliderFrame = CreateFrame("Frame", "ACHFilterAlphaSliderFrame", transparencySection)
     sliderFrame:SetPoint("LEFT", filterAlphaLabel, "RIGHT", 8, 0)
     sliderFrame:SetWidth(100)
     sliderFrame:SetHeight(20)
     
     -- Slider background texture
     local sliderBG = sliderFrame:CreateTexture(nil, "BACKGROUND")
-    sliderBG:SetTexture(0, 0, 0, 0.5)
+    sliderBG:SetTexture(0, 0, 0, 0)
     sliderBG:SetAllPoints(sliderFrame)
     
-    -- Create the actual slider
+    -- Create the actual slider inside the container
     local slider = CreateFrame("Slider", "ACHFilterAlphaSlider", sliderFrame, "OptionsSliderTemplate")
     slider:SetPoint("CENTER", sliderFrame, "CENTER", 0, 0)
     slider:SetWidth(80)
@@ -909,7 +1107,7 @@ local function CreateOptionsPanel()
     _G[slider:GetName() .. "High"]:SetText("")
     _G[slider:GetName() .. "Text"]:SetText("")
     
-    -- Create value display
+    -- Create value display inside the container
     local sliderValueText = sliderFrame:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
     sliderValueText:SetPoint("TOP", slider, "BOTTOM", 0, -4)
     sliderValueText:SetText("100%")
@@ -946,44 +1144,71 @@ local function CreateOptionsPanel()
         end
     end)
     
-    -- Channel Recording Checkboxes
-    local channelHeader = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    channelHeader:SetPoint("TOPLEFT", filterColorSwatch, "BOTTOMLEFT", 0, -40)  -- Moved down to make room for slider
+    -- Create a container for Record Channels checkboxes
+    local channelContainer = CreateFrame("Frame", nil, panel)
+    channelContainer:SetPoint("LEFT", colorContainer, "RIGHT", -175, 40)  -- Position this container
+    channelContainer:SetWidth(200)
+    channelContainer:SetHeight(150)
+    
+    -- Channel Recording Checkboxes - INSIDE THE CONTAINER
+    local channelHeader = channelContainer:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+    channelHeader:SetPoint("TOPLEFT", channelContainer, "TOPLEFT", 0, 0)  -- Relative to container
     channelHeader:SetText("Record Channels:")
     
-    local checkGlobal = CreateFrame("CheckButton", "ACHCheckGlobal", panel, "UICheckButtonTemplate")
+    local checkGlobal = CreateFrame("CheckButton", "ACHCheckGlobal", channelContainer, "UICheckButtonTemplate")
     checkGlobal:SetPoint("TOPLEFT", channelHeader, "BOTTOMLEFT", 0, -8)
     checkGlobal:SetScript("OnClick", function(self)
         tempSettings.recordGlobal = self:GetChecked()
     end)
     
-    local checkGlobalLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    local checkGlobalLabel = channelContainer:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     checkGlobalLabel:SetPoint("LEFT", checkGlobal, "RIGHT", 0, 0)
     checkGlobalLabel:SetText("Global")
     
-    local checkGeneral = CreateFrame("CheckButton", "ACHCheckGeneral", panel, "UICheckButtonTemplate")
+    local checkGeneral = CreateFrame("CheckButton", "ACHCheckGeneral", channelContainer, "UICheckButtonTemplate")
     checkGeneral:SetPoint("TOPLEFT", checkGlobal, "BOTTOMLEFT", 0, -4)
     checkGeneral:SetScript("OnClick", function(self)
         tempSettings.recordGeneral = self:GetChecked()
     end)
     
-    local checkGeneralLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    local checkGeneralLabel = channelContainer:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     checkGeneralLabel:SetPoint("LEFT", checkGeneral, "RIGHT", 0, 0)
     checkGeneralLabel:SetText("General")
     
-    local checkParty = CreateFrame("CheckButton", "ACHCheckParty", panel, "UICheckButtonTemplate")
+    local checkParty = CreateFrame("CheckButton", "ACHCheckParty", channelContainer, "UICheckButtonTemplate")
     checkParty:SetPoint("TOPLEFT", checkGeneral, "BOTTOMLEFT", 0, -4)
     checkParty:SetScript("OnClick", function(self)
         tempSettings.recordParty = self:GetChecked()
     end)
     
-    local checkPartyLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    local checkPartyLabel = channelContainer:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
     checkPartyLabel:SetPoint("LEFT", checkParty, "RIGHT", 0, 0)
     checkPartyLabel:SetText("Party")
     
-    -- Message Retention Dropdown - MOVED TO THE RIGHT AND ALIGNED WITH GLOBAL TEXT
+    -- NEW: Raid Recording Checkbox - FIXED: Added missing 'end'
+    local checkRaid = CreateFrame("CheckButton", "ACHCheckRaid", channelContainer, "UICheckButtonTemplate")
+    checkRaid:SetPoint("TOPLEFT", checkParty, "BOTTOMLEFT", 0, -4)
+    checkRaid:SetScript("OnClick", function(self)
+        tempSettings.recordRaid = self:GetChecked()
+    end)
+
+    local checkRaidLabel = channelContainer:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    checkRaidLabel:SetPoint("LEFT", checkRaid, "RIGHT", 0, 0)
+    checkRaidLabel:SetText("Raid (includes Raid Leader)")
+
+    local checkRaidWarning = CreateFrame("CheckButton", "ACHCheckRaidWarning", channelContainer, "UICheckButtonTemplate")
+    checkRaidWarning:SetPoint("TOPLEFT", checkRaid, "BOTTOMLEFT", 0, -4)
+    checkRaidWarning:SetScript("OnClick", function(self)
+        tempSettings.recordRaidWarning = self:GetChecked()
+    end)
+
+    local checkRaidWarningLabel = channelContainer:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+    checkRaidWarningLabel:SetPoint("LEFT", checkRaidWarning, "RIGHT", 0, 0)
+    checkRaidWarningLabel:SetText("Raid Warning")
+    
+    -- Message Retention Dropdown - UPDATED POSITION (moved up)
     local retentionLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
-    retentionLabel:SetPoint("LEFT", colorContainer, "RIGHT", -175, 70)  -- Adjusted Y position up (was 0, now 8)
+    retentionLabel:SetPoint("LEFT", colorContainer, "RIGHT", 65, 94)  -- Moved up to make room for Record Channels
     retentionLabel:SetText("Message Retention:")
     
     local retentionDropdown = CreateFrame("Frame", "ACHRetentionDropdown", panel, "UIDropDownMenuTemplate")
@@ -1016,7 +1241,7 @@ local function CreateOptionsPanel()
     UIDropDownMenu_Initialize(retentionDropdown, RetentionDropdown_Initialize)
     UIDropDownMenu_SetWidth(retentionDropdown, 120)
     
-    -- Timezone Offset Dropdown - MOVED TO THE RIGHT AND ALIGNED WITH GENERAL TEXT
+    -- Timezone Offset Dropdown - UPDATED POSITION (moved up)
     local timezoneLabel = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
     timezoneLabel:SetPoint("TOPLEFT", retentionDropdown, "BOTTOMLEFT", 15, -10)  -- Fixed: Position relative to retention dropdown
     timezoneLabel:SetText("Timezone Offset:")
@@ -1074,6 +1299,8 @@ local function CreateOptionsPanel()
         checkGlobal:SetChecked(tempSettings.recordGlobal)
         checkGeneral:SetChecked(tempSettings.recordGeneral)
         checkParty:SetChecked(tempSettings.recordParty)
+        checkRaid:SetChecked(tempSettings.recordRaid)
+        checkRaidWarning:SetChecked(tempSettings.recordRaidWarning)
         
         UIDropDownMenu_SetSelectedValue(retentionDropdown, tempSettings.retentionSeconds)
         UIDropDownMenu_SetSelectedValue(timezoneDropdown, tempSettings.timezoneOffset)
@@ -1109,12 +1336,17 @@ local function CreateOptionsPanel()
             generalColor = { r = 176/255, g = 96/255, b = 255/255 },
             partyColor = { r = 176/255, g = 96/255, b = 255/255 },
             partyLeaderColor = { r = 176/255, g = 96/255, b = 255/255 },
+            raidColor = { r = 176/255, g = 96/255, b = 255/255 }, -- NEW: Default raid color
+            raidLeaderColor = { r = 176/255, g = 96/255, b = 255/255 }, -- NEW: Default raid leader color
+            raidWarningColor = { r = 176/255, g = 96/255, b = 255/255 }, -- NEW: Default raid warning color
             filterColor = { r = 1, g = 1, b = 1 },
             filterAlpha = 1.0,
             filter = "",
             recordGlobal = true,
             recordGeneral = true,
             recordParty = true,
+            recordRaid = true,
+            recordRaidWarning = true,
             retentionSeconds = 3600,
             timezoneOffset = 0,
         }
@@ -1156,91 +1388,91 @@ f:SetScript("OnEvent", function(_, event, ...)
         
     elseif event == "CHAT_MSG_CHANNEL" then
         local msg, author, _, _, _, _, _, channelNumber, channelName, _, _, guid = ...
-        local lowerChannelName = channelName and string.lower(channelName) or ""
-        local globalChannelKey = CFG.GlobalChannelName and string.lower(CFG.GlobalChannelName) or ""
-
-        if channelName and globalChannelKey ~= "" then
-            local globalPrefixIndex = string.find(lowerChannelName, globalChannelKey, 1, true)
-            if globalPrefixIndex == 1 then
-                if ACH_DB.settings.recordGlobal then
-                    local p = {
-                        t = Now(),
-                        from = author,
-                        msg = msg,
-                        guid = guid,
-                        src = CFG.GlobalChannelName,
-                    }
-
-                    PushLine("global", CFG.GlobalChannelName, author, msg, guid, CFG.GlobalChannelName)
-
-                    if PassesFilter(p) then
-                        Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
-                    end
-                end
-                return
+        
+        -- FIXED: Better channel detection based on NAME not NUMBER
+        if not channelName then return end
+        
+        local lowerChannelName = string.lower(channelName)
+        local globalChannelKey = string.lower(CFG.GlobalChannelName or "")
+        
+        local isGlobalChannel = false
+        local isGeneralChannel = false
+        
+        -- Check for Global channel by NAME (not number)
+        if globalChannelKey ~= "" then
+            -- Check if channel name exactly matches Global channel name
+            if lowerChannelName == globalChannelKey then
+                isGlobalChannel = true
+            -- Also check if channel name starts with Global channel name
+            elseif string.find(lowerChannelName, "^" .. globalChannelKey) then
+                isGlobalChannel = true
             end
         end
-
-        local generalTag = string.lower(GENERAL or "general")
-        local isGeneralChannel = channelNumber == 1
-        if not isGeneralChannel and generalTag ~= "" and channelName then
-            local prefixIndex = string.find(lowerChannelName, generalTag, 1, true)
-            if prefixIndex == 1 then
+        
+        -- Check for General channel by NAME (not number)
+        if not isGlobalChannel then
+            -- Check if channel name exactly matches "general"
+            if lowerChannelName == "general" then
+                isGeneralChannel = true
+            -- Also check if channel name contains "general"
+            elseif string.find(lowerChannelName, "general") then
                 isGeneralChannel = true
             end
         end
-
+        
+        -- Handle Global channel messages
+        if isGlobalChannel and ACH_DB.settings.recordGlobal then
+            if PushLine("global", CFG.GlobalChannelName, author, msg, guid, CFG.GlobalChannelName) then
+                ScheduleChatRefresh()
+            end
+            return  -- Important: Return early to prevent processing as General
+        end
+        
+        -- Handle General channel messages
         if isGeneralChannel and ACH_DB.settings.recordGeneral then
-            local p = {
-                t = Now(),
-                from = author,
-                msg = msg,
-                guid = guid,
-                src = "General",
-            }
-
-            PushLine("general", "General", author, msg, guid, "General")
-
-            if PassesFilter(p) then
-                Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
+            if PushLine("general", "General", author, msg, guid, "General") then
+                ScheduleChatRefresh()
             end
         end
         
     elseif event == "CHAT_MSG_PARTY" then
         if ACH_DB.settings.recordParty then
             local msg, author, _, _, _, _, _, _, _, _, _, guid = ...
-            
-            local p = {
-                t = Now(),
-                from = author,
-                msg = msg,
-                guid = guid,
-                src = "Party",
-            }
-            
-            PushLine("party", "Party", author, msg, guid, "Party")
-            
-            if PassesFilter(p) then
-                Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
+            if PushLine("party", "Party", author, msg, guid, "Party") then
+                ScheduleChatRefresh()
             end
         end
         
     elseif event == "CHAT_MSG_PARTY_LEADER" then
         if ACH_DB.settings.recordParty then
             local msg, author, _, _, _, _, _, _, _, _, _, guid = ...
-            
-            local p = {
-                t = Now(),
-                from = author,
-                msg = msg,
-                guid = guid,
-                src = "Party Leader",
-            }
-            
-            PushLine("party", "Party", author, msg, guid, "Party Leader")
-            
-            if PassesFilter(p) then
-                Out(FormatLine(p.t, p.src, p.from, p.msg, p.guid), p.src)
+            if PushLine("party", "Party", author, msg, guid, "Party Leader") then
+                ScheduleChatRefresh()
+            end
+        end
+        
+    -- NEW: Raid channel events
+    elseif event == "CHAT_MSG_RAID" then
+        if ACH_DB.settings.recordRaid then
+            local msg, author, _, _, _, _, _, _, _, _, _, guid = ...
+            if PushLine("raid", "Raid", author, msg, guid, "Raid") then
+                ScheduleChatRefresh()
+            end
+        end
+        
+    elseif event == "CHAT_MSG_RAID_LEADER" then
+        if ACH_DB.settings.recordRaid then
+            local msg, author, _, _, _, _, _, _, _, _, _, guid = ...
+            if PushLine("raid", "Raid", author, msg, guid, "Raid Leader") then
+                ScheduleChatRefresh()
+            end
+        end
+        
+    elseif event == "CHAT_MSG_RAID_WARNING" then
+        if ACH_DB.settings.recordRaidWarning then
+            local msg, author, _, _, _, _, _, _, _, _, _, guid = ...
+            if PushLine("raidWarning", "Raid Warning", author, msg, guid, "Raid Warning") then
+                ScheduleChatRefresh()
             end
         end
     end
@@ -1251,3 +1483,6 @@ f:RegisterEvent("PLAYER_LOGIN")
 f:RegisterEvent("CHAT_MSG_CHANNEL")
 f:RegisterEvent("CHAT_MSG_PARTY")
 f:RegisterEvent("CHAT_MSG_PARTY_LEADER")
+f:RegisterEvent("CHAT_MSG_RAID") -- NEW: Register raid events
+f:RegisterEvent("CHAT_MSG_RAID_LEADER") -- NEW: Register raid leader events
+f:RegisterEvent("CHAT_MSG_RAID_WARNING")
