@@ -760,19 +760,25 @@ local function EnsureChatFrame()
     end
 
     achFrame = FindChatWindowByName("ACH")
-    
+
     if not achFrame then
         achFrame = FCF_OpenNewWindow("ACH")
-        FCF_DockFrame(achFrame)
+
+        -- safety init
+        achFrame.fadeInTime = achFrame.fadeInTime or 0.25
+        achFrame.oldAlpha   = achFrame.oldAlpha or (achFrame:GetAlpha() or 0)
+        achFrame.fading     = achFrame.fading or false
     end
 
+    FCF_DockFrame(achFrame)
+
     StripACHMessageGroups(achFrame)
-    
+
     achFrame:SetFading(false)
     achFrame:SetMaxLines(2000)
-    
-    achFrame:HookScript("OnShow", UpdateFilterBarVisibility)
-    achFrame:HookScript("OnHide", UpdateFilterBarVisibility)
+
+    achFrame:HookScript("OnShow",  UpdateFilterBarVisibility)
+    achFrame:HookScript("OnHide",  UpdateFilterBarVisibility)
     if not filterBarSizeHooked then
         achFrame:HookScript("OnSizeChanged", function()
             UpdateFilterBarGeometry()
@@ -781,7 +787,7 @@ local function EnsureChatFrame()
     end
 
     UnsubscribeRealChatFromACH()
-    
+
     EnsureFilterBar()
     SyncFilterBarAlpha()
     UpdateFilterBarVisibility()
